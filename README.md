@@ -76,8 +76,6 @@
 │   │   └── RewardsToken.sol          # Токен наград
 │   └── libraries/
 │       └── ArrayUtils.sol            # Утилиты для работы с массивами
-├── scripts/
-│   └── deploy.js                     # Скрипт развертывания
 ├── test/
 │   └── StudentRewards.test.js        # Тесты
 ├── package.json                      # Зависимости проекта
