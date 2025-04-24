@@ -1,196 +1,205 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity >=0.7.0 < 0.9.0;
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/v4.0.0/contracts/token/ERC20/ERC20.sol";
+pragma solidity ^0.8.0;
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-//  ПОЛЕЗНЫЕ ССЫЛКИ:
-//  https://soliditydeveloper.com/max-contract-size
-//  https://docs.soliditylang.org/en/v0.8.19/
-
-// Функция сортировки массива
-function _sortArray(uint[] memory array) pure returns (uint [] memory) {
-    uint[] memory arr = new uint[] (array.length);
-    for (uint i = 0; i < array.length; i++) {
-        arr[i] = array[i];
+// Библиотека для работы с массивами
+library ArrayUtils {
+    function removeElement(uint[] storage array, uint index) internal {
+        require(index < array.length, "Index out of bounds");
+        array[index] = array[array.length - 1];
+        array.pop();
     }
-    for (uint i = 0; i < array.length; i++) {
-        for (uint j = i+1; j < array.length; j++) {
-            if (arr[i] < arr[j]) {
-                uint temp = arr[j];
-                arr[j] = arr[i];
-                arr[i] = temp;
+
+    function removeAddress(address[] storage array, address addr) internal returns (bool) {
+        for (uint i = 0; i < array.length; i++) {
+            if (array[i] == addr) {
+                array[i] = array[array.length - 1];
+                array.pop();
+                return true;
             }
         }
+        return false;
     }
-    return arr;
 }
 
+// Основной контракт
+contract StudentRewards is ERC20, Pausable, AccessControl, ReentrancyGuard {
+    using ArrayUtils for uint[];
+    using ArrayUtils for address[];
 
-contract Diplom is ERC20 {
+    // Роли в системе
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant TEACHER_ROLE = keccak256("TEACHER_ROLE");
+    bytes32 public constant MERCHANDISER_ROLE = keccak256("MERCHANDISER_ROLE");
+    bytes32 public constant STUDENT_ROLE = keccak256("STUDENT_ROLE");
+    bytes32 public constant SECRETARY_ROLE = keccak256("SECRETARY_ROLE");
 
-// СТРУКТУРЫ И СПИСКИ ДАННЫХ
-//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    
-    // Список ролей в системе
-    enum Role { 
-        student,
-        teacher,
-        merchandiser, 
-        secretary,
-        admin
-    }
+    // События
+    event UserCreated(address indexed user, bytes32 role);
+    event ProductCreated(uint indexed id, bytes32 name, uint32 price);
+    event ProductPurchased(uint indexed id, address indexed buyer, uint32 price);
+    event ProductReturned(uint indexed id, address indexed buyer);
+    event AchievementAdded(address indexed student, uint8 scale, uint8 place);
+    event VoteStarted(uint indexed voteId);
+    event VoteEnded(uint indexed voteId, bool approved);
+    event RewardDistributed(address indexed student, uint amount);
 
-    // Структура пользователя
+    // Структуры данных
     struct User {
-        string login;
-        string phone;
-        string email;
+        bytes32 login;
+        bytes32 phone;
+        bytes32 email;
         string fio;
         bytes32 password;
-        Role role;
+        bytes32 role;
         bool gender;
         bool online;
         bool exist;
     }
 
-    // Структура товара
     struct Product {
-        uint amount;
-        uint price;
-        string name;
+        uint32 amount;
+        uint32 price;
+        bytes32 name;
         string description;
-        Categoryes category;
+        Category category;
         bool exist;
     }
 
-    // Список категорий товаров в системе
-    enum Categoryes {
-        bakery,
-        stationery,
-        coupon
+    enum Category {
+        BAKERY,
+        STATIONERY,
+        COUPON
     }
 
-    // Структура отзыва о товаре
-    struct Review {
-        address sender;
-        uint product;
-        string content;
-        uint32 answer;
-        uint32[] answers;
-        uint8 rate;
-        address[] likes;
-        address[] dislikes;
-        bool exists;
+    struct Achievement {
+        address owner;
+        uint8 scale;  // 4 - международные, 3 - всероссийские, 2 - областные, 1 - городские
+        uint8 place;  // 4 - 1 место, 3 - 2 место, 2 - 3 место, 1 - другое
+        uint32 price;
+        string description;
     }
 
-    // Структура студента
     struct Student {
-        string group;
-        string speciality;
-        uint cours;
-        uint reward;
+        bytes32 group;
+        bytes32 speciality;
+        uint8 course;
+        uint32 reward;
         uint[] achievements;
-        uint[] myPurchases;
-        uint[] myProducts;
-        uint[] friends;
-        uint32[] reviews; // отзывы
+        uint[] purchases;
+        uint[] products;
+        address[] friends;
+        uint32[] reviews;
         string[] history;
     }
 
-    // Структура покупки
     struct Purchase {
         address buyer;
-        uint product;
-        uint price;
-        uint timeBuy;
-        uint timeReturn;
-        uint status; // 1 - отправлен запрос, 2 - подтвержден продавцом и ожидает студента, 3 - закончен, 4 - запрос на возврат товара, 5 - товар возвращен
+        uint productId;
+        uint32 price;
+        uint32 timeBuy;
+        uint32 timeReturn;
+        PurchaseStatus status;
     }
 
-    // Структура подарка
-    struct Gift {
-        address sender;
-        address recipient;
-        uint value;
-        string message;
-        uint status; // 1 - send; 2 - принят; 3 - cancel
+    enum PurchaseStatus {
+        REQUESTED,
+        CONFIRMED,
+        COMPLETED,
+        RETURN_REQUESTED,
+        RETURNED
     }
 
-    // Структура достижения
-    struct Achievement {
-        address owner;
-        uint scale; // 4 - международные, 3 - всероссийские, 2 - областные, 1 - городские
-        uint place; // 4 - 1 место, 3 - 2 место, 2 - 3 место, 1 - другое
-        uint price; 
-        string discription;
+    // Структура для рейтинга
+    struct Rating {
+        address student;
+        uint32 score;
     }
 
-    // Стуктура голосования
-    struct Vote {
-        address[] yes;
-        address[] no;
-        address[] voted;
-        address[] rating;
-        uint status; // 1 - голосуют; 2 - закончено; 3 - отклонено.
+    // Маппинги и массивы
+    mapping(address => User) private users;
+    mapping(bytes32 => address) private loginToAddress;
+    mapping(uint => Product) private products;
+    mapping(uint => Achievement) private achievements;
+    mapping(address => Student) private students;
+    mapping(uint => Purchase) private purchases;
+    
+    // Счетчики
+    uint private productId;
+    uint private achievementId;
+    uint private purchaseId;
+    
+    // Массивы для быстрого доступа
+    address[] private studentAddresses;
+    uint[] private productIds;
+    
+    // Константы
+    uint32 private constant MAX_PRODUCT_AMOUNT = type(uint32).max;
+    uint32 private constant MIN_PRODUCT_PRICE = 1;
+    uint8 private constant MAX_COURSE = 4;
+    
+    // Модификаторы
+    modifier onlyRole(bytes32 role) {
+        require(hasRole(role, msg.sender), "Caller does not have required role");
+        _;
     }
 
-    // Пользователи
-    mapping (address => User) users;
-    mapping (string => address) addresses;
+    modifier userExists(address addr) {
+        require(users[addr].exist, "User does not exist");
+        _;
+    }
 
-    // Товары 
-    mapping (uint => Product) products;
-    uint productId = 4;
-    
-    // Отзывы о товарах
-    mapping(uint32 => Review) reviews;
-    uint32[] reviewsArray = [0];
+    modifier productExists(uint id) {
+        require(products[id].exist, "Product does not exist");
+        _;
+    }
 
-    // Cтуденты
-    address[] studentsArray;
-    mapping (address => Student) students;
+    modifier studentExists(address addr) {
+        require(users[addr].exist && hasRole(STUDENT_ROLE, addr), "Student does not exist");
+        _;
+    }
 
-    // Покупки
-    uint idPurchase = 0;
-    mapping (uint => Purchase) purchases;
-    
-    // Подарки
-    uint idGift = 0;
-    mapping (uint => Gift) gifts;
+    // Конструктор
+    constructor(
+        string memory name,
+        string memory symbol,
+        address admin
+    ) ERC20(name, symbol) {
+        _setupRole(DEFAULT_ADMIN_ROLE, admin);
+        _setupRole(ADMIN_ROLE, admin);
+    }
 
-    // Достижения
-    uint achId = 0;
-    mapping (uint => Achievement) achievements;
-    
-    // Голосования
-    mapping (uint => Vote) votes;
-    mapping (uint => address) forRating;
-    uint public idVote = 1;
+    // Функция сортировки массива
+    function _sortArray(uint[] memory array) pure returns (uint [] memory) {
+        uint[] memory arr = new uint[] (array.length);
+        for (uint i = 0; i < array.length; i++) {
+            arr[i] = array[i];
+        }
+        for (uint i = 0; i < array.length; i++) {
+            for (uint j = i+1; j < array.length; j++) {
+                if (arr[i] < arr[j]) {
+                    uint temp = arr[j];
+                    arr[j] = arr[i];
+                    arr[i] = temp;
+                }
+            }
+        }
+        return arr;
+    }
 
-    // Админы
-    address[] admins;
-
-    // Время деплоя контракта
-    uint start = 0;
-    bool flagVote = false;
-    uint countMounth = 1;
-
-
-
-
-
-// ФУНКЦИОНАЛ ПОЛЬЗОВАТЕЛЯ
-//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-    
     // Функция входа в аккаунт
     function logIn (bytes32 password) public {
         require(password == users[msg.sender].password && users[msg.sender].exist, "Wrong password or login");
         users[msg.sender].online = true;
     }
 
-    function newUser (address addr, string memory login, string memory phone, string memory email, string memory fio, bytes32 password, Role role, bool gender) public {
+    function newUser (address addr, string memory login, string memory phone, string memory email, string memory fio, bytes32 password, bytes32 role, bool gender) public {
         users[addr] = User(login, phone, email, fio, password, role, gender, false, true);
-        addresses[login] = addr;
+        loginToAddress[login] = addr;
     }
 
     function newStudent (address addr, string memory group, string memory speciality, uint cours ) public {
@@ -202,11 +211,11 @@ contract Diplom is ERC20 {
 
     // Функция получение адреса
     function getAdrress (string memory login) public view returns (address) {
-        return addresses[login];
+        return loginToAddress[login];
     }
 
     // Функция получения информации об пользователе
-    function getUser (address addr) public view returns (string memory, string memory, string memory, string memory, Role, bool, bool, bool) {
+    function getUser (address addr) public view returns (string memory, string memory, string memory, string memory, bytes32, bool, bool, bool) {
         User memory user = users[addr];
         return (
             user.login,
@@ -231,17 +240,31 @@ contract Diplom is ERC20 {
         users[addr].exist = false;
     }
 
-
-
-
-
-
-// ФУНКЦИОНАЛ СВЯЗАННЫЙ С ТОВАРАМИ
-//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
     // Функция создания нового товара
-    function createProduct (string memory name, string memory description, Categoryes category, uint amount, uint price) public {
-        products[++productId] = Product(amount, price, name, description, category, true);
+    function createProduct(
+        bytes32 name,
+        string memory description,
+        Category category,
+        uint32 amount,
+        uint32 price
+    ) public onlyRole(MERCHANDISER_ROLE) {
+        require(amount > 0, "Amount must be greater than 0");
+        require(price > 0, "Price must be greater than 0");
+
+        unchecked {
+            productId++;
+        }
+
+        products[productId] = Product({
+            amount: amount,
+            price: price,
+            name: name,
+            description: description,
+            category: category,
+            exist: true
+        });
+
+        emit ProductCreated(productId, name, price);
     }
 
     // Функция добавления количества уже существующего товара
@@ -307,7 +330,7 @@ contract Diplom is ERC20 {
     }
 
     // Функция получения всей информации о товаре
-    function getProduct (uint id) public view returns(uint, uint, string memory, string memory, Categoryes, bool) {
+    function getProduct (uint id) public view returns(uint, uint, string memory, string memory, Category, bool) {
         Product memory product = products[id];
         return (
             product.amount,
@@ -319,27 +342,36 @@ contract Diplom is ERC20 {
         );
     }
 
-
-
-
-
-
-// ФУНКЦИОНАЛ СТУДЕНТОВ // Пересмотреть покупку Товара  ???
-//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
     // Функция подтверждения запроса на покупку от мерчандайзера 
     function acceptRequestBuy (uint id) public {
-        purchases[id].status = 2;
+        purchases[id].status = CONFIRMED;
     }
 
-    function buyProduct (uint id) public {
+    function buyProduct(uint id) public onlyRole(STUDENT_ROLE) userExists(msg.sender) {
+        require(products[id].exist, "Product does not exist");
+        require(products[id].amount > 0, "Product is out of stock");
+        require(balanceOf(msg.sender) >= products[id].price, "Insufficient balance");
+
+        unchecked {
+            products[id].amount--;
+        }
+
         _transfer(msg.sender, 0x5B38Da6a701c568545dCfcB03FcB875f56beddC4, products[id].price);
-        products[id].amount = products[id].amount - 1;
+        
         students[msg.sender].myProducts.push(id);
         students[msg.sender].myPurchases.push(id);
-        purchases[++idPurchase] = Purchase(msg.sender, id, products[id].price, 0, 0, 1);
-        purchases[id].timeBuy = block.timestamp;
-        purchases[id].status = 3;
+        
+        uint purchaseId = ++purchaseId;
+        purchases[purchaseId] = Purchase({
+            buyer: msg.sender,
+            productId: id,
+            price: products[id].price,
+            timeBuy: uint32(block.timestamp),
+            timeReturn: 0,
+            status: CONFIRMED
+        });
+
+        emit ProductPurchased(id, msg.sender, products[id].price);
     }
 
     // Функция запроса на возврат 
@@ -413,11 +445,11 @@ contract Diplom is ERC20 {
         Purchase memory purchase = purchases[id];
         return(
             purchase.buyer,
-            purchase.product,
+            purchase.productId,
             purchase.price,
             purchase.timeBuy,
             purchase.timeReturn,
-            purchase.status
+            uint(purchase.status)
         );
     }
 
@@ -439,7 +471,7 @@ contract Diplom is ERC20 {
         return (
             student.group,
             student.speciality,
-            student.cours,
+            student.course,
             student.reward,
             student.myPurchases,
             student.myProducts,
@@ -448,19 +480,12 @@ contract Diplom is ERC20 {
         );
     }
 
-
-
-
-
-// ФУНКЦИОНАЛ ВОЗНАГРАЖДЕНИЯ СТУДЕНТОВ
-//--------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
     // Функция добавления достижения/грамоты студенту
     function addAchievement (address owner, uint scale, uint place, string memory discription) public {
-        require(users[owner].role == Role.student, "Role user no students");
+        require(hasRole(STUDENT_ROLE, owner), "Role user no students");
         uint price = scale * place;
-        achievements[++achId] = Achievement(owner, scale, place, price, discription);
-        students[owner].achievements.push(achId);
+        achievements[++achievementId] = Achievement(owner, uint8(scale), uint8(place), price, discription);
+        students[owner].achievements.push(achievementId);
     }
 
     // Функция Получения информции о достижении
@@ -471,7 +496,7 @@ contract Diplom is ERC20 {
             ach.scale, 
             ach.place, 
             ach.price, 
-            ach.discription
+            ach.description
         );
     }
 
@@ -536,41 +561,74 @@ contract Diplom is ERC20 {
     }
     
     // Функция составления рейтинга
-    // Еще немного улучшить (добавить успеваемость в суммарные токены) и сделать вложенный маппинг, чтобы получать значение по uint и адресу студента
-    function rating () private returns (address[] memory) {
+    function rating() private returns (address[] memory) {
+        uint activeStudents = 0;
+        
+        // Подсчитываем количество активных студентов
+        for (uint i = 0; i < studentAddresses.length; i++) {
+            if (users[studentAddresses[i]].exist) {
+                activeStudents++;
+            }
+        }
 
-        uint[] memory znahenia = new uint[](studentsArray.length);
+        // Создаем массивы нужного размера
+        uint[] memory scores = new uint[](activeStudents);
+        address[] memory activeAddresses = new address[](activeStudents);
+        uint currentIndex = 0;
 
-        for (uint i = 0; i < studentsArray.length; i++) {
-            if (users[studentsArray[i]].exist) {
+        // Заполняем массивы только активными студентами
+        for (uint i = 0; i < studentAddresses.length; i++) {
+            if (users[studentAddresses[i]].exist) {
                 uint sumPriceAchiv = 0;
-
-                for (uint j = 0; j < students[studentsArray[i]].achievements.length; j++) {
-                    sumPriceAchiv += achievements[students[studentsArray[i]].achievements[j]].price;
+                uint[] memory studentAchievements = students[studentAddresses[i]].achievements;
+                
+                // Используем unchecked для оптимизации gas
+                unchecked {
+                    for (uint j = 0; j < studentAchievements.length; j++) {
+                        sumPriceAchiv += achievements[studentAchievements[j]].price;
+                    }
                 }
 
-                if (sumPriceAchiv != 0) {
-                    znahenia[i] = sumPriceAchiv;
-                    forRating[sumPriceAchiv] = studentsArray[i];
+                if (sumPriceAchiv > 0) {
+                    scores[currentIndex] = sumPriceAchiv;
+                    activeAddresses[currentIndex] = studentAddresses[i];
+                    forRating[sumPriceAchiv] = studentAddresses[i];
+                    currentIndex++;
                 }
             }
         }
-        znahenia = _sortArray(znahenia);
-        address[] memory studRating = new address[](znahenia.length);
 
-        for (uint i = 0; i < znahenia.length; i++) {
-            studRating[i] = forRating[znahenia[i]];
-            students[forRating[znahenia[i]]].reward = znahenia[i];
+        // Сортировка массива
+        for (uint i = 0; i < activeStudents - 1; i++) {
+            for (uint j = i + 1; j < activeStudents; j++) {
+                if (scores[i] < scores[j]) {
+                    // Обмен значениями
+                    uint tempScore = scores[i];
+                    address tempAddr = activeAddresses[i];
+                    
+                    scores[i] = scores[j];
+                    activeAddresses[i] = activeAddresses[j];
+                    
+                    scores[j] = tempScore;
+                    activeAddresses[j] = tempAddr;
+                }
+            }
         }
-        return (studRating);
+
+        // Обновляем награды студентов
+        for (uint i = 0; i < activeStudents; i++) {
+            students[activeAddresses[i]].reward = scores[i];
+        }
+
+        return activeAddresses;
     }
 
     function changeStateStudents() public {
-         for (uint i = 0; i < studentsArray.length; i++) {
-            students[studentsArray[i]].cours++;
-            if (students[studentsArray[i]].cours == 5) {
-                users[studentsArray[i]].exist = false;
-                deleteUser(studentsArray[i]);
+         for (uint i = 0; i < studentAddresses.length; i++) {
+            students[studentAddresses[i]].course++;
+            if (students[studentAddresses[i]].course == 5) {
+                users[studentAddresses[i]].exist = false;
+                deleteUser(studentAddresses[i]);
             }
         }
     }
@@ -616,33 +674,448 @@ contract Diplom is ERC20 {
 
         // Администраторы 
         users[0x26b1FD93B9081934803A83D362EcD32c1C6E5C59] = User("Dima", "89094340355", "0_acc@gmail.com", "Dima Kononenko", 0xc89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc6, Role.admin, true, false, true);
-        addresses["Dima"] = 0x26b1FD93B9081934803A83D362EcD32c1C6E5C59;
+        loginToAddress["Dima"] = 0x26b1FD93B9081934803A83D362EcD32c1C6E5C59;
 
             admins.push(0x26b1FD93B9081934803A83D362EcD32c1C6E5C59);
 
         // Студенты
         users[0xdEA0eCB71d6A6A6fa85427B4bFE88D6e67C4bdfb] = User("Anton", "89094340355", "0_acc@gmail.com", "Anton Silyanov", 0xc89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc6, Role.student, true, false, true);
-        addresses["Anton"] = 0xdEA0eCB71d6A6A6fa85427B4bFE88D6e67C4bdfb;
+        loginToAddress["Anton"] = 0xdEA0eCB71d6A6A6fa85427B4bFE88D6e67C4bdfb;
 
             students[0xdEA0eCB71d6A6A6fa85427B4bFE88D6e67C4bdfb] = Student("P-419", "09.02.07", 4, 0, empU, empU, empU, empU, empR, empS);
-            studentsArray.push(0xdEA0eCB71d6A6A6fa85427B4bFE88D6e67C4bdfb);
+            studentAddresses.push(0xdEA0eCB71d6A6A6fa85427B4bFE88D6e67C4bdfb);
 
         // Учителя
         users[0x00a6b70fb75C7208297806a2a4c6ddf19D550d1D] = User("Vanya", "89094340355", "0_acc@gmail.com", "Vanya Leichenkov", 0xc89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc6, Role.teacher, true, false, true);
-        addresses["Vanya"] = 0x00a6b70fb75C7208297806a2a4c6ddf19D550d1D;
+        loginToAddress["Vanya"] = 0x00a6b70fb75C7208297806a2a4c6ddf19D550d1D;
 
         // Товаровед 
         users[0xa828E01796040D0Ad59De9601609790561AAAEfB] = User("Sergey", "89094340355", "0_acc@gmail.com", "Sergey Morgun", 0xc89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc6, Role.merchandiser, true, false, true);
-        addresses["Sergey"] = 0xa828E01796040D0Ad59De9601609790561AAAEfB;
+        loginToAddress["Sergey"] = 0xa828E01796040D0Ad59De9601609790561AAAEfB;
         
         // Секретарь 
         users[0x768ACd1608A85c9ab8b407255f846F74854c617a] = User("Maxim", "89094340355", "0_acc@gmail.com", "Maxim Stulov", 0xc89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc6, Role.secretary, true, false, true);
-        addresses["Maxim"] = 0x768ACd1608A85c9ab8b407255f846F74854c617a;
+        loginToAddress["Maxim"] = 0x768ACd1608A85c9ab8b407255f846F74854c617a;
 
         // Товары
-        products[1] = Product(10, 150, "Bulochka",  "Vkusno", Categoryes.bakery, true);
-        products[2] = Product(10, 250, "Pizza",     "Vkusno", Categoryes.bakery, true);
-        products[3] = Product(10, 200, "Gamburger", "Vkusno", Categoryes.bakery, true);
-        products[4] = Product(10, 300, "Coca cola", "Vkusno", Categoryes.bakery, true);
+        products[1] = Product(10, 150, "Bulochka",  "Vkusno", Category.BAKERY, true);
+        products[2] = Product(10, 250, "Pizza",     "Vkusno", Category.BAKERY, true);
+        products[3] = Product(10, 200, "Gamburger", "Vkusno", Category.BAKERY, true);
+        products[4] = Product(10, 300, "Coca cola", "Vkusno", Category.BAKERY, true);
+    }
+
+    // Функции управления пользователями
+    function createUser(
+        address addr,
+        bytes32 login,
+        bytes32 phone,
+        bytes32 email,
+        string memory fio,
+        bytes32 password,
+        bytes32 role,
+        bool gender
+    ) external onlyRole(ADMIN_ROLE) {
+        require(addr != address(0), "Invalid address");
+        require(!users[addr].exist, "User already exists");
+        require(loginToAddress[login] == address(0), "Login already taken");
+
+        users[addr] = User({
+            login: login,
+            phone: phone,
+            email: email,
+            fio: fio,
+            password: password,
+            role: role,
+            gender: gender,
+            online: false,
+            exist: true
+        });
+
+        loginToAddress[login] = addr;
+        _setupRole(role, addr);
+
+        emit UserCreated(addr, role);
+    }
+
+    function createStudent(
+        address addr,
+        bytes32 group,
+        bytes32 speciality,
+        uint8 course
+    ) external onlyRole(ADMIN_ROLE) {
+        require(hasRole(STUDENT_ROLE, addr), "Address must have student role");
+        require(course <= MAX_COURSE, "Invalid course number");
+
+        students[addr] = Student({
+            group: group,
+            speciality: speciality,
+            course: course,
+            reward: 0,
+            achievements: new uint[](0),
+            purchases: new uint[](0),
+            products: new uint[](0),
+            friends: new address[](0),
+            reviews: new uint32[](0),
+            history: new string[](0)
+        });
+
+        studentAddresses.push(addr);
+    }
+
+    function login(bytes32 password) external {
+        require(users[msg.sender].exist, "User does not exist");
+        require(users[msg.sender].password == password, "Invalid password");
+        users[msg.sender].online = true;
+    }
+
+    function logout() external {
+        require(users[msg.sender].exist, "User does not exist");
+        users[msg.sender].online = false;
+    }
+
+    function updateUserProfile(
+        bytes32 phone,
+        bytes32 email,
+        string memory fio
+    ) external userExists(msg.sender) {
+        users[msg.sender].phone = phone;
+        users[msg.sender].email = email;
+        users[msg.sender].fio = fio;
+    }
+
+    function changePassword(bytes32 newPassword) external userExists(msg.sender) {
+        users[msg.sender].password = newPassword;
+    }
+
+    // Функции для работы с товарами
+    function createProduct(
+        bytes32 name,
+        string memory description,
+        Category category,
+        uint32 amount,
+        uint32 price
+    ) external onlyRole(MERCHANDISER_ROLE) whenNotPaused {
+        require(amount > 0 && amount <= MAX_PRODUCT_AMOUNT, "Invalid amount");
+        require(price >= MIN_PRODUCT_PRICE, "Invalid price");
+
+        unchecked {
+            productId++;
+        }
+
+        products[productId] = Product({
+            amount: amount,
+            price: price,
+            name: name,
+            description: description,
+            category: category,
+            exist: true
+        });
+
+        productIds.push(productId);
+        emit ProductCreated(productId, name, price);
+    }
+
+    function updateProduct(
+        uint id,
+        uint32 amount,
+        uint32 price
+    ) external onlyRole(MERCHANDISER_ROLE) productExists(id) {
+        require(amount <= MAX_PRODUCT_AMOUNT, "Invalid amount");
+        require(price >= MIN_PRODUCT_PRICE, "Invalid price");
+
+        products[id].amount = amount;
+        products[id].price = price;
+    }
+
+    function buyProduct(uint id) 
+        external 
+        onlyRole(STUDENT_ROLE) 
+        studentExists(msg.sender) 
+        productExists(id) 
+        whenNotPaused 
+        nonReentrant 
+    {
+        Product storage product = products[id];
+        require(product.amount > 0, "Product out of stock");
+        require(balanceOf(msg.sender) >= product.price, "Insufficient balance");
+
+        unchecked {
+            product.amount--;
+        }
+
+        _transfer(msg.sender, address(this), product.price);
+        
+        Student storage student = students[msg.sender];
+        student.products.push(id);
+        
+        unchecked {
+            purchaseId++;
+        }
+        
+        purchases[purchaseId] = Purchase({
+            buyer: msg.sender,
+            productId: id,
+            price: product.price,
+            timeBuy: uint32(block.timestamp),
+            timeReturn: 0,
+            status: PurchaseStatus.COMPLETED
+        });
+
+        student.purchases.push(purchaseId);
+        emit ProductPurchased(id, msg.sender, product.price);
+    }
+
+    // Функции для работы с достижениями
+    function addAchievement(
+        address student,
+        uint8 scale,
+        uint8 place,
+        string memory description
+    ) external onlyRole(TEACHER_ROLE) studentExists(student) {
+        require(scale >= 1 && scale <= 4, "Invalid scale");
+        require(place >= 1 && place <= 4, "Invalid place");
+
+        uint32 price = uint32(scale * place);
+        
+        unchecked {
+            achievementId++;
+        }
+
+        achievements[achievementId] = Achievement({
+            owner: student,
+            scale: scale,
+            place: place,
+            price: price,
+            description: description
+        });
+
+        students[student].achievements.push(achievementId);
+        emit AchievementAdded(student, scale, place);
+    }
+
+    // Вспомогательные функции
+    function getUser(address addr) external view returns (
+        bytes32 login,
+        bytes32 phone,
+        bytes32 email,
+        string memory fio,
+        bytes32 role,
+        bool gender,
+        bool online,
+        bool exist
+    ) {
+        User memory user = users[addr];
+        return (
+            user.login,
+            user.phone,
+            user.email,
+            user.fio,
+            user.role,
+            user.gender,
+            user.online,
+            user.exist
+        );
+    }
+
+    function getStudent(address addr) external view returns (
+        bytes32 group,
+        bytes32 speciality,
+        uint8 course,
+        uint32 reward,
+        uint[] memory achievements,
+        uint[] memory purchases,
+        uint[] memory products
+    ) {
+        Student memory student = students[addr];
+        return (
+            student.group,
+            student.speciality,
+            student.course,
+            student.reward,
+            student.achievements,
+            student.purchases,
+            student.products
+        );
+    }
+
+    function getProduct(uint id) external view returns (
+        uint32 amount,
+        uint32 price,
+        bytes32 name,
+        string memory description,
+        Category category,
+        bool exist
+    ) {
+        Product memory product = products[id];
+        return (
+            product.amount,
+            product.price,
+            product.name,
+            product.description,
+            product.category,
+            product.exist
+        );
+    }
+
+    // Функции управления контрактом
+    function pause() external onlyRole(ADMIN_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(ADMIN_ROLE) {
+        _unpause();
+    }
+
+    function grantRole(bytes32 role, address account) external onlyRole(ADMIN_ROLE) {
+        _grantRole(role, account);
+    }
+
+    function revokeRole(bytes32 role, address account) external onlyRole(ADMIN_ROLE) {
+        _revokeRole(role, account);
+    }
+
+    // Функции для работы с рейтингом и вознаграждениями
+    function calculateStudentScore(address student) public view returns (uint32) {
+        Student storage studentData = students[student];
+        uint32 totalScore = 0;
+
+        for (uint i = 0; i < studentData.achievements.length; i++) {
+            Achievement storage achievement = achievements[studentData.achievements[i]];
+            totalScore += achievement.price;
+        }
+
+        return totalScore;
+    }
+
+    function updateStudentRewards() external onlyRole(ADMIN_ROLE) {
+        Rating[] memory ratings = new Rating[](studentAddresses.length);
+        uint validStudents = 0;
+
+        // Собираем оценки всех активных студентов
+        for (uint i = 0; i < studentAddresses.length; i++) {
+            address studentAddr = studentAddresses[i];
+            if (users[studentAddr].exist && hasRole(STUDENT_ROLE, studentAddr)) {
+                uint32 score = calculateStudentScore(studentAddr);
+                if (score > 0) {
+                    ratings[validStudents] = Rating(studentAddr, score);
+                    validStudents++;
+                }
+            }
+        }
+
+        // Сортировка рейтинга
+        for (uint i = 0; i < validStudents - 1; i++) {
+            for (uint j = i + 1; j < validStudents; j++) {
+                if (ratings[i].score < ratings[j].score) {
+                    Rating memory temp = ratings[i];
+                    ratings[i] = ratings[j];
+                    ratings[j] = temp;
+                }
+            }
+        }
+
+        // Распределение вознаграждений
+        for (uint i = 0; i < validStudents; i++) {
+            address studentAddr = ratings[i].student;
+            uint32 reward = ratings[i].score;
+            
+            students[studentAddr].reward = reward;
+            _transfer(address(this), studentAddr, reward);
+            
+            emit RewardDistributed(studentAddr, reward);
+        }
+    }
+
+    function getTopStudents(uint limit) external view returns (address[] memory, uint32[] memory) {
+        Rating[] memory ratings = new Rating[](studentAddresses.length);
+        uint validStudents = 0;
+
+        // Собираем оценки
+        for (uint i = 0; i < studentAddresses.length; i++) {
+            address studentAddr = studentAddresses[i];
+            if (users[studentAddr].exist && hasRole(STUDENT_ROLE, studentAddr)) {
+                uint32 score = calculateStudentScore(studentAddr);
+                if (score > 0) {
+                    ratings[validStudents] = Rating(studentAddr, score);
+                    validStudents++;
+                }
+            }
+        }
+
+        // Сортировка
+        for (uint i = 0; i < validStudents - 1; i++) {
+            for (uint j = i + 1; j < validStudents; j++) {
+                if (ratings[i].score < ratings[j].score) {
+                    Rating memory temp = ratings[i];
+                    ratings[i] = ratings[j];
+                    ratings[j] = temp;
+                }
+            }
+        }
+
+        // Подготовка результата
+        uint resultSize = limit > validStudents ? validStudents : limit;
+        address[] memory topStudents = new address[](resultSize);
+        uint32[] memory topScores = new uint32[](resultSize);
+
+        for (uint i = 0; i < resultSize; i++) {
+            topStudents[i] = ratings[i].student;
+            topScores[i] = ratings[i].score;
+        }
+
+        return (topStudents, topScores);
+    }
+
+    function getStudentAchievements(address student) 
+        external 
+        view 
+        studentExists(student) 
+        returns (
+            uint[] memory achievementIds,
+            uint8[] memory scales,
+            uint8[] memory places,
+            uint32[] memory prices,
+            string[] memory descriptions
+        ) 
+    {
+        Student storage studentData = students[student];
+        uint achievementCount = studentData.achievements.length;
+
+        achievementIds = new uint[](achievementCount);
+        scales = new uint8[](achievementCount);
+        places = new uint8[](achievementCount);
+        prices = new uint32[](achievementCount);
+        descriptions = new string[](achievementCount);
+
+        for (uint i = 0; i < achievementCount; i++) {
+            uint achievementId = studentData.achievements[i];
+            Achievement storage achievement = achievements[achievementId];
+            
+            achievementIds[i] = achievementId;
+            scales[i] = achievement.scale;
+            places[i] = achievement.place;
+            prices[i] = achievement.price;
+            descriptions[i] = achievement.description;
+        }
+
+        return (achievementIds, scales, places, prices, descriptions);
+    }
+
+    // Функция для перевода курса
+    function advanceCourse() external onlyRole(ADMIN_ROLE) {
+        for (uint i = 0; i < studentAddresses.length; i++) {
+            address studentAddr = studentAddresses[i];
+            Student storage student = students[studentAddr];
+            
+            if (users[studentAddr].exist && hasRole(STUDENT_ROLE, studentAddr)) {
+                if (student.course < MAX_COURSE) {
+                    student.course++;
+                } else {
+                    // Выпускник
+                    _revokeRole(STUDENT_ROLE, studentAddr);
+                    users[studentAddr].exist = false;
+                }
+            }
+        }
     }
 }
